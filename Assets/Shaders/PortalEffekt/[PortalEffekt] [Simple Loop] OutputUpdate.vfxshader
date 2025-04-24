@@ -1,0 +1,615 @@
+//[PortalEffekt] [Simple Loop] OutputUpdate,6
+//Don't delete the previous line or this one
+#pragma kernel CSMain
+#pragma only_renderers d3d11 glcore gles3 metal vulkan xboxone xboxone xboxseries playstation ps5 switch webgpu
+
+
+#pragma enable_d3d11_debug_symbols
+#define NB_THREADS_PER_GROUP 64
+#define HAS_VFX_ATTRIBUTES 1
+#define VFX_PASSDEPTH_ACTUAL (0)
+#define VFX_PASSDEPTH_MOTION_VECTOR (1)
+#define VFX_PASSDEPTH_SELECTION (2)
+#define VFX_PASSDEPTH_PICKING (3)
+#define VFX_PASSDEPTH_SHADOW (4)
+#define VFX_USE_LIFETIME_CURRENT 1
+#define VFX_USE_POSITION_CURRENT 1
+#define VFX_USE_SIZE_CURRENT 1
+#define VFX_USE_SCALEX_CURRENT 1
+#define VFX_USE_SCALEY_CURRENT 1
+#define VFX_USE_ALIVE_CURRENT 1
+#define VFX_USE_PIVOTX_CURRENT 1
+#define VFX_USE_PIVOTY_CURRENT 1
+#define VFX_USE_PIVOTZ_CURRENT 1
+#define VFX_USE_SCALEZ_CURRENT 1
+#define VFX_USE_AXISX_CURRENT 1
+#define VFX_USE_AXISY_CURRENT 1
+#define VFX_USE_AXISZ_CURRENT 1
+#define VFX_USE_ANGLEX_CURRENT 1
+#define VFX_USE_ANGLEY_CURRENT 1
+#define VFX_USE_ANGLEZ_CURRENT 1
+#define VFX_USE_AGE_CURRENT 1
+#define VFX_USE_COLOR_CURRENT 1
+#define VFX_USE_ALPHA_CURRENT 1
+#define RAW_CAPACITY 300u
+#define HAVE_VFX_MODIFICATION 1
+#define INDIRECT_BUFFER_COUNT 1
+#define VFX_FEATURE_SORT 1
+#define SORTING_SIGN 1
+#define VFX_DISTANCE_SORT_KEY 1
+#define VFX_WORLD_SPACE 1
+#include_with_pragmas "Packages/com.unity.render-pipelines.universal/Runtime/VFXGraph/Shaders/VFXDefines.hlsl"
+#define VFX_USE_GRAPH_VALUES 1
+#define VFX_USE_INSTANCING 1
+#define VFX_INSTANCING_FIXED_SIZE 320
+#define VFX_INSTANCING_ACTIVE_INDIRECTION 1
+#define VFX_INSTANCING_BATCH_INDIRECTION 1
+#define VFX_FACE_RAY 1
+
+
+struct GraphValues
+{
+    bool _vfx_enabled_j;
+    bool _vfx_enabled_k;
+    float4 Size_a;
+    bool _vfx_enabled_l;
+    float3 Color_a;
+};
+ByteAddressBuffer graphValuesBuffer;
+
+
+
+struct VFXAttributes
+{
+    float lifetime;
+    float3 position;
+    float size;
+    float scaleX;
+    float scaleY;
+    bool alive;
+    float pivotX;
+    float pivotY;
+    float pivotZ;
+    float scaleZ;
+    float3 axisX;
+    float3 axisY;
+    float3 axisZ;
+    float angleX;
+    float angleY;
+    float angleZ;
+    float age;
+    float3 color;
+    float alpha;
+};
+
+struct VFXSourceAttributes
+{
+};
+
+
+
+#ifdef VFX_IS_RAYTRACED
+#pragma multi_compile _ VFX_COMPUTE_AABBS
+#endif
+
+#if USE_MULTI_COMPILE_XR_IN_OUTPUT_UPDATE
+#pragma multi_compile _ UNITY_SINGLE_PASS_STEREO STEREO_INSTANCING_ON STEREO_MULTIVIEW_ON
+#endif
+
+#if HAS_STRIPS_DATA
+StructuredBuffer<uint> stripDataBuffer;
+#endif
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ByteAddressBuffer attributeBuffer;
+
+#if VFX_FEATURE_MOTION_VECTORS
+RWByteAddressBuffer elementToVFXBuffer;
+#endif
+
+#if VFX_FEATURE_SORT
+struct Kvp
+{
+	float sortKey;
+	uint index;
+};
+#define IndirectOutputType Kvp
+#else
+#define IndirectOutputType uint
+#endif
+
+#if INDIRECT_BUFFER_COUNT > 0
+RWStructuredBuffer<IndirectOutputType> outputBuffer0;
+#endif
+#if INDIRECT_BUFFER_COUNT > 1
+RWStructuredBuffer<IndirectOutputType> outputBuffer1;
+#endif
+#if INDIRECT_BUFFER_COUNT > 2
+RWStructuredBuffer<IndirectOutputType> outputBuffer2;
+#endif
+#if INDIRECT_BUFFER_COUNT > 3
+RWStructuredBuffer<IndirectOutputType> outputBuffer3;
+#endif
+#if INDIRECT_BUFFER_COUNT > 4
+#error Too many indirect buffers defined.
+#endif
+
+CBUFFER_START(updateParamsConst)
+    uint dispatchWidth;
+    float4 instancingConstants;
+    uint2 instancingBufferOffsets;
+    
+    float3 cameraXRSettings;
+CBUFFER_END
+
+#include "Packages/com.unity.render-pipelines.universal/Runtime/VFXGraph/Shaders/VFXCommon.hlsl"
+#include "Packages/com.unity.visualeffectgraph/Shaders/VFXCommon.hlsl"
+
+
+void Orient_635(inout float3 axisX, inout float3 axisY, inout float3 axisZ, float3 position) /*mode:FaceCameraPlane axes:ZY faceRay:True */
+{
+    
+    float3x3 viewRot = GetVFXToViewRotMatrix();
+    float3 worldUp = VFXGetObjectToWorldMatrix()._m10_m11_m12;
+    GetCameraPlaneOrRayFacingAxes(viewRot, position, worldUp, axisX, axisY, axisZ);
+    #if VFX_LOCAL_SPACE // Need to remove potential scale in local transform
+    axisX = normalize(axisX);
+    axisY = normalize(axisY);
+    axisZ = normalize(axisZ);
+    #endif
+    
+}
+void AttributeFromCurve_7DF18693(inout float size, float age, float lifetime, float4 Size) /*SampleMode:OverLife ColorMode:ColorAndAlpha channels:XYZ */
+{
+    float t = age / lifetime;
+    float value = 0.0f;
+    value = SampleCurve(Size, t);
+    size *= value;
+}
+void AttributeFromCurve_80EE2EEB(inout float3 color, inout float alpha, float age, float lifetime, float3 Color) /*SampleMode:OverLife ColorMode:ColorAndAlpha channels:XYZ */
+{
+    float t = age / lifetime;
+    float4 value = 0.0f;
+    value = SampleGradient(Color, t);
+    color *= value.rgb;
+    alpha = value.a;
+}
+
+
+#if VFX_FEATURE_FRUSTUM_CULL || VFX_FEATURE_LOD
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/GeometricTools.hlsl"
+
+bool IsSphereOutsideFrustum(float3 pos, float radius, float4 frustumPlanes[6])
+{
+    bool outside = false;
+    [unroll]
+    for (int i = 0; i < 6; ++i)
+        outside = outside || DistanceFromPlane(pos, frustumPlanes[i]) < -radius;
+    return outside;
+}
+#endif
+
+#if HAS_STRIPS
+// Strips tangent computation
+float3 GetParticlePosition(uint index, uint instanceIndex)
+{
+	VFXAttributes attributes = (VFXAttributes)0;
+	attributes.position = asfloat(attributeBuffer.Load3(((instanceIndex * 0x1040) + (index * 0x4 + 0x140)) << 2));
+		return attributes.position;
+}
+
+float3 GetStripTangent(float3 currentPos, uint instanceIndex, uint relativeIndex, const StripData stripData)
+{
+	float3 prevTangent = (float3)0.0f;
+	if (relativeIndex > 0)
+	{
+		uint prevIndex = GetParticleIndex(relativeIndex - 1,stripData);
+		float3 tangent = currentPos - GetParticlePosition(prevIndex,instanceIndex);
+		float sqrLength = dot(tangent, tangent);
+		if (sqrLength > VFX_EPSILON * VFX_EPSILON)
+			prevTangent = tangent * rsqrt(sqrLength);
+	}
+
+	float3 nextTangent = (float3)0.0f;
+	if (relativeIndex + 1 < stripData.nextIndex)
+	{
+		uint nextIndex = GetParticleIndex(relativeIndex + 1,stripData);
+		float3 tangent = GetParticlePosition(nextIndex, instanceIndex) - currentPos;
+		float sqrLength = dot(tangent, tangent);
+		if (sqrLength > VFX_EPSILON * VFX_EPSILON)
+			nextTangent = tangent * rsqrt(sqrLength);
+	}
+
+	return normalize(prevTangent + nextTangent);
+}
+
+#endif
+
+void AppendOutputBuffer(RWStructuredBuffer<IndirectOutputType> outputBuffer, IndirectOutputType output, uint instanceActiveIndex, uint increment = 1)
+{
+    uint indirectIndex;
+
+#if VFX_FEATURE_SORT
+    InterlockedAdd(outputBuffer[instanceActiveIndex].index, increment, indirectIndex);
+#else
+    InterlockedAdd(outputBuffer[instanceActiveIndex], increment, indirectIndex);
+#endif
+    indirectIndex /= increment;
+    indirectIndex += instancingBatchSize + instanceActiveIndex * RAW_CAPACITY;
+    outputBuffer[indirectIndex] = output;
+}
+
+
+[numthreads(NB_THREADS_PER_GROUP,1,1)]
+void CSMain(uint3 groupId		: SV_GroupID,
+			uint3 groupThreadId	: SV_GroupThreadID)
+{
+	uint id = GetThreadId(groupId, groupThreadId, dispatchWidth);
+
+    uint instanceIndex, instanceActiveIndex, instanceCurrentIndex;
+    #if defined(VFX_INSTANCING_FIXED_SIZE)
+    	uint index = GetThreadId(groupId, 0, dispatchWidth);
+    	index = VFXInitInstancing(index, instanceIndex, instanceActiveIndex, instanceCurrentIndex);
+    	index += groupThreadId.x;
+    #else
+    	uint index = VFXInitInstancing(id, instanceIndex, instanceActiveIndex, instanceCurrentIndex);
+    #endif
+    
+    
+
+    struct ContextData
+    {
+        uint maxParticleCount;
+        uint systemSeed;
+        uint initSpawnIndex;
+    };
+    ContextData contextData;
+    uint4 rawContextData = graphValuesBuffer.Load4(instanceActiveIndex * 352);
+    contextData.maxParticleCount = rawContextData.x;
+    contextData.systemSeed = rawContextData.y;
+    contextData.initSpawnIndex = rawContextData.z;
+    
+    uint systemSeed = contextData.systemSeed;
+    uint nbMax = contextData.maxParticleCount;
+
+	if (index < nbMax)
+	{
+        GraphValues graphValues;
+        
+        graphValues.Size_a = asfloat(graphValuesBuffer.Load4(instanceActiveIndex * 352  + 144));
+        graphValues.Color_a = asfloat(graphValuesBuffer.Load3(instanceActiveIndex * 352  + 256));
+        graphValues._vfx_enabled_j = (bool)graphValuesBuffer.Load(instanceActiveIndex * 352  + 328);
+        graphValues._vfx_enabled_k = (bool)graphValuesBuffer.Load(instanceActiveIndex * 352  + 332);
+        graphValues._vfx_enabled_l = (bool)graphValuesBuffer.Load(instanceActiveIndex * 352  + 336);
+        
+
+#if VFX_LOCAL_SPACE
+        
+        
+        vfxLocalToWorld = localToWorld;
+
+        
+        
+        vfxWorldToLocal = worldToLocal;
+#else
+        vfxWorldToLocal = k_identity4x4;
+        vfxLocalToWorld = k_identity4x4;
+#endif
+
+		VFXAttributes attributes = (VFXAttributes)0;
+		VFXSourceAttributes sourceAttributes = (VFXSourceAttributes)0;
+		attributes.lifetime = asfloat(attributeBuffer.Load(((instanceIndex * 0x1040) + (index * 0x1 + 0x0)) << 2));
+		attributes.position = asfloat(attributeBuffer.Load3(((instanceIndex * 0x1040) + (index * 0x4 + 0x140)) << 2));
+		attributes.size = (float)0.100000001;
+		attributes.scaleX = (float)1;
+		attributes.scaleY = (float)1;
+		attributes.alive = (attributeBuffer.Load(((instanceIndex * 0x1040) + (index * 0x4 + 0x143)) << 2));
+		attributes.pivotX = (float)0;
+		attributes.pivotY = (float)0;
+		attributes.pivotZ = (float)0;
+		attributes.scaleZ = (float)1;
+		attributes.axisX = float3(1, 0, 0);
+		attributes.axisY = float3(0, 1, 0);
+		attributes.axisZ = float3(0, 0, 1);
+		attributes.angleX = (float)0;
+		attributes.angleY = (float)0;
+		attributes.angleZ = (float)0;
+		attributes.age = asfloat(attributeBuffer.Load(((instanceIndex * 0x1040) + (index * 0x1 + 0x640)) << 2));
+		attributes.color = float3(1, 1, 1);
+		attributes.alpha = (float)1;
+		
+#if HAS_STRIPS
+        // For strips, we need to render the entire strip, even if some particles are dead.
+        const StripData stripData = GetStripDataFromParticleIndex(index, instanceIndex);
+        InitStripAttributes(index, attributes, stripData);
+        uint relativeIndexInStrip = GetRelativeIndex(index, stripData);
+		if (relativeIndexInStrip < stripData.nextIndex)
+#else
+		if (attributes.alive)
+#endif
+		{
+			if (graphValues._vfx_enabled_j)
+			{
+			    Orient_635( /*inout */attributes.axisX,  /*inout */attributes.axisY,  /*inout */attributes.axisZ, attributes.position);
+			}
+			if (graphValues._vfx_enabled_k)
+			{
+			    AttributeFromCurve_7DF18693( /*inout */attributes.size, attributes.age, attributes.lifetime, graphValues.Size_a);
+			}
+			if (graphValues._vfx_enabled_l)
+			{
+			    AttributeFromCurve_80EE2EEB( /*inout */attributes.color,  /*inout */attributes.alpha, attributes.age, attributes.lifetime, graphValues.Color_a);
+			}
+			
+
+#if !HAS_STRIPS
+            // Recheck alive as blocks can set it to false for manual culling.
+            // Test will be stripped if it's not the case anyway.
+            if (attributes.alive)
+#endif
+            {
+                float3 size3 = float3(attributes.size,attributes.size,attributes.size);
+                #if VFX_USE_SCALEX_CURRENT
+                size3.x *= attributes.scaleX;
+                #endif
+                #if VFX_USE_SCALEY_CURRENT
+                size3.y *= attributes.scaleY;
+                #endif
+                #if VFX_USE_SCALEZ_CURRENT
+                size3.z *= attributes.scaleZ;
+                #endif
+                
+                float3 center = attributes.position;
+#if HAS_STRIPS
+                // Add an epsilon so that size is never 0 for strips
+                size3.x += size3.x < 0.0f ? -VFX_EPSILON : VFX_EPSILON;
+                size3.y += size3.y < 0.0f ? -VFX_EPSILON : VFX_EPSILON;
+                size3.z += size3.z < 0.0f ? -VFX_EPSILON : VFX_EPSILON;
+
+                if (relativeIndexInStrip + 1 < stripData.nextIndex)
+                {
+                    uint nextIndex = GetParticleIndex(relativeIndexInStrip + 1,stripData);
+                    center = (center + GetParticlePosition(nextIndex, instanceIndex)) * 0.5f;
+                    size3 += abs(center - attributes.position) * sign(size3);
+                }
+#endif
+                float4x4 elementToVFX = GetElementToVFXMatrix(
+                    attributes.axisX,
+                    attributes.axisY,
+                    attributes.axisZ,
+                    float3(attributes.angleX,attributes.angleY,attributes.angleZ),
+                    float3(attributes.pivotX,attributes.pivotY,attributes.pivotZ),
+                    size3,
+                    center);
+
+#if VFX_FEATURE_FRUSTUM_CULL || VFX_FEATURE_LOD
+#if VFX_WORLD_SPACE
+	            float4x4 elementToWorld = elementToVFX;
+                elementToWorld._m03_m13_m23 = GetCameraRelativePositionWS(elementToWorld._m03_m13_m23);
+#else
+                float4x4 elementToWorld = mul(GetObjectToWorldMatrix(),elementToVFX);
+#endif
+
+	            float xAxisSqrLength = dot(elementToWorld._m00_m10_m20, elementToWorld._m00_m10_m20);
+	            float yAxisSqrLength = dot(elementToWorld._m01_m11_m21, elementToWorld._m01_m11_m21);
+	            float zAxisSqrLength = dot(elementToWorld._m02_m12_m22, elementToWorld._m02_m12_m22);
+                float radius = 0.5f * sqrt(xAxisSqrLength + yAxisSqrLength + zAxisSqrLength);
+
+                
+                
+                radius *= radiusScale;
+
+#if VFX_FEATURE_FRUSTUM_CULL
+                if (IsSphereOutsideFrustum(elementToWorld._m03_m13_m23, radius, _FrustumPlanes))
+                    return;
+#endif
+#endif
+
+#if INDIRECT_BUFFER_COUNT > 0
+#if VFX_FEATURE_LOD
+                uint outputIndex = ~0u;
+#if !VFX_FEATURE_FRUSTUM_CULL
+                // If particle is out of frustum and frustum culling is disabled, use the lowest LOD
+                // This is useful for shadow passes for instance to avoid out of frustum particles to be culled from shadows
+                if (IsSphereOutsideFrustum(elementToWorld._m03_m13_m23, radius, _FrustumPlanes))
+                    outputIndex = INDIRECT_BUFFER_COUNT - 1;
+                else
+#endif
+                {
+                    float viewZ = mul(GetWorldToViewMatrix(), float4(elementToWorld._m03_m13_m23, 1)).z;
+                    float4x4 centeredProjMatrix = GetViewToHClipMatrix();
+                    centeredProjMatrix._13_14_23_24 = 0.0f; //Cancels the jittering and/or the eye offset when in VR
+                    float4 clip = mul(centeredProjMatrix, float4(radius, radius, viewZ, 1));
+                    float lodValue = max(abs(clip.x),abs(clip.y)) * rcp(max(VFX_EPSILON, clip.w));
+
+                    
+                    
+
+                    for (uint i = 0; i < INDIRECT_BUFFER_COUNT; ++i)
+                        if (lodValue > lodValues[i])
+                        {
+                            outputIndex = i;
+                            break;
+                        }
+                }
+#elif INDIRECT_BUFFER_COUNT == 1
+                uint outputIndex = 0;
+#else
+                uint outputIndex = attributes.meshIndex;
+#endif
+                if (outputIndex >= INDIRECT_BUFFER_COUNT)
+                    return;
+
+
+#if VFX_FEATURE_SORT
+                Kvp output;
+#if VFX_CUSTOM_SORT_KEY
+                
+                
+                output.sortKey = -1.0f * sortKey; //Lowest values are rendered first
+#elif VFX_DISTANCE_SORT_KEY
+#if VFX_LOCAL_SPACE
+                float3 posRWS = TransformObjectToWorld(attributes.position);
+#else
+                float3 posRWS = GetCameraRelativePositionWS(attributes.position);
+#endif
+                float3 camToPos = posRWS - GetCurrentViewPosition();
+
+                output.sortKey = dot(camToPos,camToPos); // sqr distance to the camera
+#elif VFX_DEPTH_SORT_KEY
+#if VFX_LOCAL_SPACE
+                float3 posRWS = TransformObjectToWorld(attributes.position);
+#else
+                float3 posRWS = GetCameraRelativePositionWS(attributes.position);
+#endif
+                float3 zAxisCam = -GetWorldToViewMatrix()[2].xyz;
+                float depth = dot(posRWS, zAxisCam);
+                output.sortKey = depth;
+
+#elif VFX_YOUNGEST_SORT_KEY
+                attributes.age = asfloat(attributeBuffer.Load(((instanceIndex * 0x1040) + (index * 0x1 + 0x640)) << 2));
+                                output.sortKey = attributes.age;
+
+#endif //VFX_[CRITERION]_SORT_KEY
+                output.index = index;
+                output.sortKey *= SORTING_SIGN;
+
+#else
+                uint output = index;
+#endif
+
+                if (outputIndex == 0)
+                {
+                    AppendOutputBuffer(outputBuffer0, output, instanceActiveIndex);
+                }
+#if INDIRECT_BUFFER_COUNT > 1
+                else if (outputIndex == 1)
+                {
+                    AppendOutputBuffer(outputBuffer1, output, instanceActiveIndex);
+                }
+#if INDIRECT_BUFFER_COUNT > 2
+                else if (outputIndex == 2)
+                {
+                    AppendOutputBuffer(outputBuffer2, output, instanceActiveIndex);
+                }
+#if INDIRECT_BUFFER_COUNT > 3
+                else if (outputIndex == 3)
+                {
+                    AppendOutputBuffer(outputBuffer3, output, instanceActiveIndex);
+                }
+#endif
+#endif
+#endif
+#endif
+
+#if VFX_FEATURE_MOTION_VECTORS
+                uint offsetedIndex = (RAW_CAPACITY * instanceIndex) + index;
+#ifdef VFX_FEATURE_MOTION_VECTORS_VERTS
+                uint viewTotal = asuint(cameraXRSettings.x);
+                uint viewCount = asuint(cameraXRSettings.y);
+                uint viewOffset = asuint(cameraXRSettings.z);
+                uint elementToVFXIndex = offsetedIndex * (VFX_FEATURE_MOTION_VECTORS_VERTS * 2 * viewTotal + 1);
+#else
+                uint elementToVFXIndex = offsetedIndex * 13;
+#endif
+                
+                
+                elementToVFXBuffer.Store(elementToVFXIndex++ << 2, attributes.alive ? asuint(currentFrameIndex) : 0u);
+#ifdef VFX_FEATURE_MOTION_VECTORS_VERTS
+                elementToVFXIndex += viewOffset * viewCount * VFX_FEATURE_MOTION_VECTORS_VERTS * 2;
+                
+                
+                #ifdef USING_STEREO_MATRICES
+                if (viewCount == 2)
+                {
+                    float4 stereoOffset = float4(GetWorldStereoOffset(), 0.0f);
+                    UNITY_UNROLL
+                    for (int itIndexVert = 0; itIndexVert < VFX_FEATURE_MOTION_VECTORS_VERTS; ++itIndexVert)
+                    {
+                        float4 vertPosWorld = float4(TransformPositionVFXToWorld(verts[itIndexVert]), 1.0f);
+                        vertPosWorld.xyz = VFXTransformPositionWorldToCameraRelative(vertPosWorld.xyz);
+                        float4 vertPosA = mul(GetNonJitteredViewProjMatrix(0), vertPosWorld);
+                        float4 vertPosB = mul(GetNonJitteredViewProjMatrix(1), vertPosWorld + stereoOffset);
+                        elementToVFXBuffer.Store4(elementToVFXIndex << 2, asuint(float4(vertPosA.xy / vertPosA.w, vertPosB.xy / vertPosB.w)));
+                        elementToVFXIndex += 4; // 1 vert * 2 floats * 2 views
+                    }
+                }
+                else
+#endif
+                {
+                    UNITY_UNROLL
+                    for (int itIndexVert = 0; itIndexVert < VFX_FEATURE_MOTION_VECTORS_VERTS - 1; itIndexVert += 2)
+                    {
+                        float4 vertPosA = TransformPositionVFXToNonJitteredClip(verts[itIndexVert]);
+                        float4 vertPosB = TransformPositionVFXToNonJitteredClip(verts[itIndexVert + 1]);
+                        elementToVFXBuffer.Store4(elementToVFXIndex << 2, asuint(float4(vertPosA.xy / vertPosA.w, vertPosB.xy / vertPosB.w)));
+                        elementToVFXIndex += 4; // 2 verts * 2 floats
+                    }
+                    if (VFX_FEATURE_MOTION_VECTORS_VERTS % 2 == 1)
+                    {
+                        int itIndexVert = VFX_FEATURE_MOTION_VECTORS_VERTS - 1;
+                        float4 vertPos = TransformPositionVFXToNonJitteredClip(verts[itIndexVert]);
+                        elementToVFXBuffer.Store2(elementToVFXIndex << 2, asuint(vertPos.xy / vertPos.w));
+                        elementToVFXIndex += 2; // 1 verts * 2 floats
+                    }
+               }
+#else
+                UNITY_UNROLL
+                for (int itIndexMatrixRow = 0; itIndexMatrixRow < 3; ++itIndexMatrixRow)
+                {
+                    float4 value = elementToVFX[itIndexMatrixRow] * attributes.alive;
+                    elementToVFXBuffer.Store4(elementToVFXIndex << 2, asuint(value));
+                    elementToVFXIndex += 4; // 1 row * 4 floats
+                }
+#endif
+#endif
+            }
+		}
+        #if VFX_COMPUTE_AABBS
+                float3 size3 = float3(attributes.size,attributes.size,attributes.size);
+                float3 rtScale = float3(1,1,1);
+                #if VFX_USE_RT_CUSTOM_SCALE
+                    
+                    
+                    rtScale = float3(rayTracedScaling, 1.0f);
+                #else
+                    #ifdef VFX_RT_DEFAULT_SCALE
+                        rtScale = VFX_RT_DEFAULT_SCALE;
+                    #endif
+                #endif
+                
+                size3 *= rtScale;
+                #if VFX_USE_SCALEX_CURRENT
+                size3.x *= attributes.scaleX;
+                #endif
+                #if VFX_USE_SCALEY_CURRENT
+                size3.y *= attributes.scaleY;
+                #endif
+                #if VFX_USE_SCALEZ_CURRENT
+                size3.z *= attributes.scaleZ;
+                #endif
+                
+                int rayTracingDecimationFactor = VFX_RT_DECIMATION_FACTOR;
+                FillAabbBuffer(attributes, size3, index, instanceIndex, rayTracingDecimationFactor);
+        #endif
+	}
+}
